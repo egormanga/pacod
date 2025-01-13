@@ -1,0 +1,13 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = *
+
+[Action]
+Description = Pick optional dependencies for packages to install
+When = PostTransaction
+Depends = pyalpm
+Depends = python-sutils
+Exec = /usr/bin/env pacod --stdin
+NeedsTargets
