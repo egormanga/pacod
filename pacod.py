@@ -158,7 +158,7 @@ def main(cargs):
 		pkg = localdb.get_pkg(i)
 		if (pkg is not None):
 			for j in pkg.optdepends:
-				dep = re.match(r'^(\w+)', j)[1]
+				dep = re.match(r'^([\w-]+)', j)[1]
 				try: optdeps[pkg][j] = first(deps for db in syncdbs if (deps := tuple((dep, localdb.get_pkg(dep.name)) for dep in db.search(rf"^{dep}$"))))
 				except StopIteration: logwarn(f"{i}: unknown dependency — {dep}")
 
