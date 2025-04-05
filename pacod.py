@@ -114,8 +114,14 @@ class ArrowKey(Key):
 	DOWN   = 'B'
 	RIGHT  = 'C'
 	LEFT   = 'D'
+	END    = 'F'
+	HOME   = 'H'
+	PGUP   = '5'
+	PGDN   = '6'
 
 class InputSM(FSM):
+	_page: ArrowKey | None
+
 	def __init__(self):
 		super().__init__('default')
 
@@ -132,8 +138,14 @@ class InputSM(FSM):
 
 	def bracket(self, c):
 		match c:
-			case ArrowKey.UP | ArrowKey.DOWN | ArrowKey.RIGHT | ArrowKey.LEFT: return 'default', ArrowKey(c)
+			case ArrowKey.UP | ArrowKey.DOWN | ArrowKey.RIGHT | ArrowKey.LEFT | ArrowKey.HOME | ArrowKey.END: return 'default', ArrowKey(c)
+			case ArrowKey.PGUP | ArrowKey.PGDN: self._page = ArrowKey(c); return 'page',
 			case _: return 'default', '\033['+c
+
+	def page(self, c):
+		match c:
+			case '~': page, self._page = self._page, None; return 'default', page
+			case _: self._page = None; return 'default', f"\033[{c}~"
 
 @apmain
 @aparg('package', nargs='+*'['--stdin' in sys.argv])
@@ -158,7 +170,7 @@ def main(cargs):
 		pkg = localdb.get_pkg(i)
 		if (pkg is not None):
 			for j in pkg.optdepends:
-				dep = re.match(r'^([\w-]+)', j)[1]
+				dep = re.match(r'^([\w.-]+)', j)[1]
 				try: optdeps[pkg][j] = first(deps for db in syncdbs if (deps := tuple((dep, localdb.get_pkg(dep.name)) for dep in db.search(rf"^{dep}$"))))
 				except StopIteration: logwarn(f"{i}: unknown dependency — {dep}")
 
@@ -168,8 +180,7 @@ def main(cargs):
 	def resize(*_):
 		nonlocal termsize
 		termsize = os.terminal_size(tty.tcgetwinsize(sys.stdin)[::-1])
-	signal.signal(signal.SIGWINCH, resize)
-	resize()
+	signal.signal(signal.SIGWINCH, resize); resize()
 
 	selected = int()
 	selected_dep = None
@@ -182,39 +193,71 @@ def main(cargs):
 
 		inp = InputSM()
 
+		skip = int()
 		while (True):
-			ii = int()
+			ii = ii_s = ii_p = ln = ln_p = int()
 			for pkg, deps in optdeps.items():
-				print(f"\033[1;44m{pkg.name.center(min(termsize.columns, 132))}\033[22;49m", end='\r\n', file=sys.stderr)
-				print(f"\033[40m{' '*min(termsize.columns, 132)}\033[49m", end='\r\n', file=sys.stderr)
+				ln += 1
+				if (ln_p+1 >= termsize.lines-1): break
+				if (ln >= skip): print(f"\033[1;44m{pkg.name.center(min(termsize.columns, 132))}\033[22;49m", end='\r\n', file=sys.stderr); ln_p += 1
+
+				ln += 1
+				if (ln_p+1 >= termsize.lines-1): break
+				if (ln >= skip): print(f"\033[40m{' '*min(termsize.columns, 132)}\033[49m", end='\r\n', file=sys.stderr); ln_p += 1
+
 				for optdep, pkgs in deps.items():
 					for kk, (dep, local_dep) in enumerate(pkgs):
 						constr = optdep.partition(':')[0].replace(dep.name, '')
 						upgrade = ''
+
 						if (local_dep is None): pick = (Pick.available, Pick.install)[dep in picked]
 						elif (pyalpm.vercmp(dep.version, local_dep.version) > 0): pick, upgrade = (Pick.installed, Pick.upgrade)[dep in picked], f" \033[22;92m→  {dep.version}\033[2;39m"
 						else: pick = (Pick.installed, Pick.reinstall)[dep in picked]
 
-						s = S(f"\033[40m{' >'[ii == selected]} {pick}  \033[1;9{DB_COLORS.get(dep.db.name, 5)}m{dep.db.name}/\033[39m{dep.name}{f'\033[2m{constr}' if (constr) else ''}\033[22;39m  \033[2m[{(local_dep or dep).version}{upgrade}]\033[22m  ")
-						desc = S(f"\033[3m{optdep.partition(':')[2].strip()}\033[23m")
+						s = S(f"""\033[40m{' >'[ii == selected]} {pick}  \033[1;9{DB_COLORS.get(dep.db.name, 5)}m{dep.db.name}/\033[39m{dep.name}{f"\033[2m{terminal_link('provides '+S(', ').join(dep.provides, last='and'), 'as').join('  ')*(dep.name not in constr)}{constr}" if (constr) else ''}\033[22;39m  \033[2m[{(local_dep or dep).version}{upgrade}]\033[22m  """)
+						desc = S(optdep.partition(':')[2].strip())
 						end = S('\033[27m  \033[49m')
-						l = (min(termsize.columns, 132) - len(s.noesc()) - len(end.noesc()))
-						print((s + ((desc := desc.fit(l-2)) and desc.join('()')).rjust(l) + end), end='\r\n', file=sys.stderr)
+
 						if (ii == selected): selected_dep = dep
 						ii += 1
-				print(f"\033[40m{' '*min(termsize.columns, 132)}\033[49m", end='\r\n', file=sys.stderr)
+
+						ln += 1
+						if (ln_p+1 >= termsize.lines-1): break
+						l = (min(termsize.columns, 132) - len(s.noesc()) - len(end.noesc()))
+						if (ln >= skip): print((s + (((desc_ := desc.fit(l-2)) and (desc__ := S(re.sub(r'(`.*?(?:`|$))', '\033[96m\\1\033[39m', desc_))) and (desc__ if (desc_ == desc) else desc.hyperlink(desc__)).join('()'))).just(l).join(('\033[3m', '\033[23m')) + end), end='\r\n', file=sys.stderr); ln_p += 1; ii_s, ii_p = (ii_s or ii), ii
+
+				ln += 1
+				if (ln_p+1 >= termsize.lines-1): break
+				if (ln >= skip): print(f"\033[40m{' '*min(termsize.columns, 132)}\033[49m", end='\r\n', file=sys.stderr); ln_p += 1
+			print('\033[J', end='', file=sys.stderr, flush=True)
 
 			if (selected is None): break
 
 			for key in inp(sys.stdin.read(1)):
 				match key:
 					case ControlKey(ControlKey.C): raise KeyboardInterrupt(key)
-					case ArrowKey(ArrowKey.UP): selected = max(selected-1, 0)
-					case ArrowKey(ArrowKey.DOWN): selected = min(selected+1, ii-1)
+					case ArrowKey(ArrowKey.UP):
+						if (selected > ii_s-1): selected -= 1
+						else: skip -= 1
+					case ArrowKey(ArrowKey.DOWN):
+						if (selected < ii_p-1): selected += 1
+						else: skip += 1
+					case ArrowKey(ArrowKey.HOME):
+						if (skip and selected > ii_s-1): selected = ii_s-1
+						else: selected = skip = 0
+					case ArrowKey(ArrowKey.END):
+						if (selected < ii_p-1): selected = ii_p-1
+						else: selected, skip = ii, termsize.lines  # max
+					case ArrowKey(ArrowKey.PGUP):
+						selected = ii_s-1
+					case ArrowKey(ArrowKey.PGDN):
+						selected = ii_p-1
 					case Key(' '): picked ^= {selected_dep}
 					case Key('\n') | Key('\r'): selected = None
+			selected = (max(ii_s-1, min(selected, ii_p-1)) if (selected is not None) else None)
+			skip = (max(1, min(skip, ln-termsize.lines+3)) if (ln_p < ln) else 0)
 
-			print(f"\033[{len(optdeps)*3 + ii}F", end='', file=sys.stderr, flush=True)
+			print(f"\033[{ln_p}F", end='', file=sys.stderr, flush=True)
 			#print('\033[u', end='', file=sys.stderr)
 	finally:
 		print('\033[u\033[J\033[?25h', end='', file=sys.stderr)
